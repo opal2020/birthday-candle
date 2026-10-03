@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0a0604">
+<title>Birthday Candle</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #0a0604; overflow: hidden; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+    color: #f3d9b8; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  .msg {
+    position: fixed; left: 0; right: 0; top: calc(env(safe-area-inset-top) + 56px);
+    text-align: center; font-size: 15px; letter-spacing: .02em; color: #f3d9b8;
+    opacity: 0; transition: opacity .8s ease; pointer-events: none; padding: 0 24px;
+  }
+  .msg.show { opacity: .75; }
+  .msg.big { top: 24%; font-size: 26px; font-weight: 300; letter-spacing: .06em; }
+  #start {
+    position: fixed; left: 50%; top: calc(env(safe-area-inset-top) + 28px); transform: translateX(-50%);
+    background: rgba(60, 46, 38, .85); color: #ffd9a6; border: 1px solid rgba(255, 200, 140, .25);
+    border-radius: 999px; padding: 12px 22px; white-space: nowrap; font-size: 15px; font-family: inherit; cursor: pointer;
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); transition: opacity .5s;
+  }
+  #start.hide { opacity: 0; pointer-events: none; }
+  #relight {
+    position: fixed; left: 20px; bottom: calc(env(safe-area-inset-bottom) + 20px);
+    width: 52px; height: 52px; border-radius: 14px; border: 0; cursor: pointer;
+    background: rgba(58, 52, 50, .9); display: grid; place-items: center;
+    opacity: 0; pointer-events: none; transition: opacity .6s;
+  }
+  #relight.show { opacity: 1; pointer-events: auto; }
+  #relight svg { width: 26px; height: 26px; fill: #ffd29a; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<button id="start" type="button">🎤 마이크 켜고 촛불 불어보기</button>
+<div id="hint" class="msg"></div>
+<div id="bday" class="msg big">Happy Birthday</div>
+<button id="relight" type="button" aria-label="다시 켜기">
+  <svg viewBox="0 0 24 24"><path d="M12 2c1 3.4 5.5 6.6 5.5 11.2A5.5 5.5 0 0 1 12 19a5.5 5.5 0 0 1-5.5-5.8c0-2 1-3.4 2.1-4.6.2 1.4.9 2.3 1.7 2.7C10 8.6 10.6 4.6 12 2z"/></svg>
+</button>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const startBtn = document.getElementById('start');
+  const relightBtn = document.getElementById('relight');
+  const hint = document.getElementById('hint');
+  const bday = document.getElementById('bday');
+
+  let W = 0, H = 0, dpr = 1;
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---------- state ----------
+  const S = {
+    lit: true,
+    scale: 0,          // 0..1 flame size (grows on light, collapses on blow out)
+    lean: 0,           // smoothed horizontal lean
+    blowDir: 1,
+    level: 0,          // blow strength 0..1
+    blowAcc: 0,        // accumulated blow time
+    outAt: 0,          // time the flame was extinguished
+    smoke: [],
+    smokeEmit: 0,
+    micOn: false,
+  };
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+
+  // smooth pseudo-noise from incommensurate sines
+  function noise(t, seed) {
+    return (Math.sin(t * 1.7 + seed) + Math.sin(t * 2.9 + seed * 2.3) * .6 +
+            Math.sin(t * 5.3 + seed * 0.7) * .35 + Math.sin(t * 9.1 + seed * 1.9) * .15) / 2.1;
+  }
+  // occasional gust
+  let gust = 0, nextGust = 2;
+
+  // ---------- microphone ----------
+  let analyser, buf, baseline = 0.01, calib = 0;
+  async function enableMic() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+      });
+      const AC = window.AudioContext || window.webkitAudioContext;
+      const ac = new AC();
+      if (ac.state === 'suspended') await ac.resume();
+      const src = ac.createMediaStreamSource(stream);
+      analyser = ac.createAnalyser();
+      analyser.fftSize = 1024;
+      buf = new Float32Array(analyser.fftSize);
+      src.connect(analyser);
+      S.micOn = true; calib = 0;
+      startBtn.classList.add('hide');
+      showHint('촛불을 향해 후— 하고 불어보세요', 4000);
+    } catch (e) {
+      startBtn.classList.add('hide');
+      showHint('마이크를 쓸 수 없어요. 촛불을 터치하면 꺼져요', 4500);
+    }
+  }
+  function readLevel(dt) {
+    if (!analyser) return 0;
+    analyser.getFloatTimeDomainData(buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+    const rms = Math.sqrt(sum / buf.length);
+    calib += dt;
+    if (calib < 0.8 || rms < baseline * 1.6) baseline = lerp(baseline, rms, calib < 0.8 ? 0.2 : 0.02);
+    const v = (rms - baseline * 1.6 - 0.015) / 0.11;
+    return clamp(v, 0, 1);
+  }
+
+  startBtn.addEventListener('click', enableMic);
+
+  let hintTimer;
+  function showHint(text, ms) {
+    hint.textContent = text; hint.classList.add('show');
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => hint.classList.remove('show'), ms);
+  }
+
+  // ---------- light / extinguish ----------
+  function extinguish(now) {
+    if (!S.lit) return;
+    S.lit = false; S.outAt = now; S.smokeEmit = 3.2;
+    relightBtn.classList.add('show');
+    setTimeout(() => { if (!S.lit) bday.classList.add('show'); }, 900);
+  }
+  function relight() {
+    if (S.lit) return;
+    S.lit = true; S.blowAcc = 0; S.lean = 0;
+    relightBtn.classList.remove('show');
+    bday.classList.remove('show');
+  }
+  relightBtn.addEventListener('click', relight);
+  canvas.addEventListener('pointerdown', (e) => {
+    const g = geom();
+    // tap on flame area blows it out when there's no mic
+    if (!S.micOn && S.lit && Math.abs(e.clientX - g.cx) < g.cw && e.clientY > g.wickY - g.fh * 1.1 && e.clientY < g.wickY + 40) {
+      extinguish(performance.now() / 1000);
+    } else if (!S.lit) {
+      relight();
+    }
+  });
+
+  // ---------- geometry ----------
+  function geom() {
+    const cw = Math.min(W * 0.22, 130);
+    return {
+      cx: W / 2, cw,
+      wickY: H * 0.775,
+      fh: Math.min(H * 0.34, 330),   // flame height
+      fw: cw * 0.34,                 // flame half-width
+    };
+  }
+
+  // ---------- drawing ----------
+  function flamePath(g, h, w, leanPx, wob, tNow) {
+    const pts = [];
+    const N = 36;
+    // left side up, right side down
+    for (let side = 0; side < 2; side++) {
+      for (let i = 0; i <= N; i++) {
+        const t = side === 0 ? i / N : 1 - i / N;
+        const prof = Math.pow(Math.sin(Math.PI * Math.pow(t, 0.55)), 1.0) * (1 - t * 0.2);
+        const cx = leanPx * t * t + Math.sin(t * 5.5 - tNow * 7) * wob * t * t;
+        const x = cx + (side === 0 ? -1 : 1) * prof * w;
+        pts.push([x, -t * h]);
+      }
+    }
+    ctx.beginPath();
+    pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
+    ctx.closePath();
+  }
+
+  function drawFlame(g, t, flick) {
+    const sc = S.scale;
+    if (sc <= 0.002) return;
+    const squash = 1 - 0.38 * S.level;
+    const h = g.fh * sc * squash * (1 + flick * 0.07);
+    const w = g.fw * (1 + flick * -0.05) * (0.6 + 0.4 * sc);
+    const leanPx = S.lean * h;
+    const wob = (6 + 22 * S.level) * (1 + Math.abs(flick));
+
+    ctx.save();
+    ctx.translate(g.cx, g.wickY - 4);
+    ctx.globalCompositeOperation = 'lighter';
+
+    const layers = [
+      { k: 1.6, hk: 1.00, a: .34, blur: 46, stops: [[0, 'rgba(255,110,30,.9)'], [.25, 'rgba(255,170,80,.9)'], [.6, 'rgba(210,140,90,.35)'], [1, 'rgba(150,110,80,0)']] },
+      { k: 1.15, hk: 0.95, a: .7, blur: 28, stops: [[0, 'rgba(255,140,50,.9)'], [.22, 'rgba(255,225,150,1)'], [.5, 'rgba(255,200,130,.8)'], [.8, 'rgba(200,150,110,.3)'], [1, 'rgba(160,120,90,0)']] },
+      { k: 0.62, hk: 0.55, a: .95, blur: 12, stops: [[0, 'rgba(255,190,100,1)'], [.3, 'rgba(255,248,215,1)'], [.7, 'rgba(255,230,170,.7)'], [1, 'rgba(255,220,160,0)']] },
+    ];
+    for (const L of layers) {
+      const hh = h * L.hk;
+      const grad = ctx.createLinearGradient(0, 0, 0, -hh);
+      L.stops.forEach(s => grad.addColorStop(s[0], s[1]));
+      ctx.fillStyle = grad;
+      ctx.globalAlpha = L.a;
+      ctx.shadowColor = 'rgba(255,150,60,.9)';
+      ctx.shadowBlur = L.blur * dpr * sc;
+      flamePath(g, hh, w * L.k, leanPx * L.hk, wob * L.hk, t);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawBackground(g, glow) {
+    const bg = ctx.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#050302');
+    bg.addColorStop(.6, lerpColor([14, 8, 5], [34, 20, 12], glow));
+    bg.addColorStop(1, lerpColor([14, 8, 5], [42, 24, 14], glow));
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+
+    if (glow > 0.01) {
+      const cy = g.wickY - g.fh * 0.35;
+      const r = Math.max(W, H) * 0.7;
+      const rg = ctx.createRadialGradient(g.cx, cy, 0, g.cx, cy, r);
+      rg.addColorStop(0, `rgba(120,60,25,${0.55 * glow})`);
+      rg.addColorStop(.35, `rgba(70,35,18,${0.35 * glow})`);
+      rg.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = rg; ctx.fillRect(0, 0, W, H);
+      // warm glow near the candle top
+      const cg = ctx.createRadialGradient(g.cx, g.wickY, 0, g.cx, g.wickY, g.cw * 2.2);
+      cg.addColorStop(0, `rgba(190,60,20,${0.4 * glow})`);
+      cg.addColorStop(1, 'rgba(190,60,20,0)');
+      ctx.fillStyle = cg; ctx.fillRect(0, 0, W, H);
+    }
+  }
+  function lerpColor(a, b, t) {
+    return `rgb(${a.map((v, i) => Math.round(lerp(v, b[i], t))).join(',')})`;
+  }
+
+  function drawCandle(g, glow, ember) {
+    const x = g.cx - g.cw / 2, y = g.wickY + 4, w = g.cw, ry = g.cw * 0.09;
+    // body
+    const body = ctx.createLinearGradient(x, 0, x + w, 0);
+    const lit = 0.45 + 0.55 * glow;
+    const c = (r, gg, b) => `rgb(${Math.round(r * lit)},${Math.round(gg * lit)},${Math.round(b * lit)})`;
+    body.addColorStop(0, c(220, 110, 40));
+    body.addColorStop(.5, c(255, 150, 60));
+    body.addColorStop(1, c(215, 105, 38));
+    ctx.fillStyle = body;
+    ctx.beginPath();
+    ctx.moveTo(x, y); ctx.lineTo(x, H + 10); ctx.lineTo(x + w, H + 10); ctx.lineTo(x + w, y);
+    ctx.ellipse(g.cx, y, w / 2, ry, 0, 0, Math.PI, true);
+    ctx.closePath(); ctx.fill();
+    // top surface
+    const top = ctx.createLinearGradient(x, y, x + w, y);
+    top.addColorStop(0, c(255, 190, 110)); top.addColorStop(.5, c(255, 215, 150)); top.addColorStop(1, c(240, 170, 95));
+    ctx.fillStyle = top;
+    ctx.beginPath(); ctx.ellipse(g.cx, y, w / 2, ry, 0, 0, Math.PI * 2); ctx.fill();
+    // wick
+    ctx.strokeStyle = '#2a1a12'; ctx.lineWidth = 2.2; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(g.cx, y + 1); ctx.lineTo(g.cx + 0.5, y - 9); ctx.stroke();
+    if (ember > 0.01) {
+      ctx.fillStyle = `rgba(255,${Math.round(90 + 90 * ember)},40,${ember})`;
+      ctx.shadowColor = 'rgba(255,100,30,.9)'; ctx.shadowBlur = 10 * dpr;
+      ctx.beginPath(); ctx.arc(g.cx + 0.5, y - 9, 1.8, 0, Math.PI * 2); ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+  }
+
+  function updateSmoke(g, dt, t) {
+    if (S.smokeEmit > 0) {
+      S.smokeEmit -= dt;
+      const rate = 26 * clamp(S.smokeEmit / 3.2, 0, 1);
+      if (Math.random() < rate * dt) {
+        S.smoke.push({ x: g.cx + 0.5, y: g.wickY - 10, age: 0, life: 2.6 + Math.random() * 1.8,
+                       ph: Math.random() * 6.28, sz: 5 + Math.random() * 5 });
+      }
+    }
+    ctx.save();
+    for (let i = S.smoke.length - 1; i >= 0; i--) {
+      const p = S.smoke[i];
+      p.age += dt;
+      if (p.age > p.life) { S.smoke.splice(i, 1); continue; }
+      const k = p.age / p.life;
+      const yy = p.y - k * (g.fh * 1.0) - p.age * 8;
+      const xx = p.x + Math.sin(p.age * 1.8 + p.ph) * (6 + 22 * k) + k * 14;
+      const r = p.sz + k * 26;
+      const a = Math.sin(Math.PI * Math.min(1, k * 1.15)) * 0.11;
+      const sg = ctx.createRadialGradient(xx, yy, 0, xx, yy, r);
+      sg.addColorStop(0, `rgba(210,200,195,${a})`);
+      sg.addColorStop(1, 'rgba(210,200,195,0)');
+      ctx.fillStyle = sg; ctx.fillRect(xx - r, yy - r, r * 2, r * 2);
+    }
+    ctx.restore();
+  }
+
+  // ---------- main loop ----------
+  let last = performance.now() / 1000;
+  function frame() {
+    const now = performance.now() / 1000;
+    const dt = Math.min(now - last, 0.05); last = now;
+    const g = geom();
+
+    // input
+    S.level = lerp(S.level, S.micOn ? readLevel(dt) : 0, 0.35);
+    if (S.lit) {
+      if (S.level > 0.45) S.blowAcc += dt; else S.blowAcc = Math.max(0, S.blowAcc - dt * 1.5);
+      if (S.blowAcc > 0.32) extinguish(now);
+    }
+
+    // gusts of "air" for a living flicker
+    nextGust -= dt;
+    if (nextGust <= 0) { gust = (Math.random() - .5) * 1.4; nextGust = 1.2 + Math.random() * 3.5; }
+    gust *= Math.pow(0.12, dt);
+
+    // flame scale
+    S.scale = S.lit ? Math.min(1, S.scale + dt * 2.4) : Math.max(0, S.scale - dt * 5);
+
+    // lean
+    const idle = noise(now * 0.9, 1.3) * 0.05 + gust * 0.05;
+    const targetLean = idle + S.blowDir * S.level * 0.55;
+    S.lean = lerp(S.lean, targetLean, 1 - Math.pow(0.002, dt));
+
+    const flick = noise(now * 3.2, 4.1) * 0.7 + noise(now * 7.7, 9.2) * 0.5 + (Math.random() - .5) * 0.15 * (S.lit ? 1 : 0);
+    const glow = clamp(S.scale * (0.9 + flick * 0.08) * (1 - 0.35 * S.level), 0, 1.1);
+    const ember = S.lit ? 0 : clamp(1 - (now - S.outAt) / 2.2, 0, 1);
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.shadowBlur = 0; ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+    drawBackground(g, glow);
+    drawCandle(g, glow, ember);
+
+    // draw flame in device-pixel space so shadowBlur matches
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawFlame(g, now, flick);
+    ctx.restore();
+    ctx.shadowBlur = 0; ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+
+    updateSmoke(g, dt, now);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    startBtn.classList.add('hide');
+    showHint('이 브라우저는 마이크를 지원하지 않아요. 촛불을 터치해보세요', 5000);
+  }
+})();
+</script>
+</body>
+</html>
