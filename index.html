@@ -35,7 +35,7 @@ const GLYPH="&@#MWVxo=%*+<>~^v/|0OXZ";
 function rAt(y){const u=clamp(y/H,0,1),d=1-u,base=R*Math.pow(1-u,0.92);
   if(d<0.06)return base;const fr=(d*7)%1;return base*(0.84+0.16*Math.pow(fr,1.2));}
 const P=[]; // all particles
-function add(o){o.sx=(rnd()-0.5)*190;o.sy=HC+(rnd()-0.5)*150;o.sz=(rnd()-0.5)*190;P.push(o);return o}
+function add(o){o.sx=o.x+(rnd()-0.5)*26;o.sy=o.y+(rnd()-0.5)*18-3;o.sz=o.z+(rnd()-0.5)*26;P.push(o);return o}
 // foliage
 for(let i=0;i<N_FOL;i++){const u=clamp(1-Math.sqrt(rnd()),0.015,0.995),y=u*H,a=rnd()*TAU,rs=rAt(y),f=0.25+0.75*Math.pow(rnd(),0.45),r=rs*f;
   const l=24+30*f+rnd()*9,hue=136+rnd()*26,sat=40+rnd()*24;
@@ -51,10 +51,10 @@ for(let i=0;i<N_GAR;i++){const u=i/N_GAR,y=H*(0.07+0.86*u),a=u*TAU*4.6+0.3,r=R*M
 // lights
 const LC=["#ff7aa8","#6ab0ff","#4de0d0","#ffa04d","#ff5a5a","#ffe27a","#c8a0ff","#ffffff"];
 for(let i=0;i<N_LIGHT;i++){const y=H*(0.08+0.84*Math.pow(rnd(),0.9)),a=rnd()*TAU,r=rAt(y)*(0.92+rnd()*0.14);
-  add({k:3,x:r*Math.cos(a),y,z:r*Math.sin(a),nx:Math.cos(a),ny:0.3,nz:Math.sin(a),g:pick("@0O@"),m:1.35+rnd()*0.35,rot:0,col:LC[i%LC.length],thr:6.2+rnd()*3.6,ph:rnd()*TAU});}
+  add({k:3,x:r*Math.cos(a),y,z:r*Math.sin(a),nx:Math.cos(a),ny:0.3,nz:Math.sin(a),g:pick("@0O@"),m:1.35+rnd()*0.35,rot:0,col:LC[i%LC.length],thr:2+(y/H)*4+rnd()*0.8,ph:rnd()*TAU});}
 // gift boxes made of letters
 const GIFTS=[[205,1.05,12,"hsl(2,85%,62%)"],[238,1.0,10,"hsl(268,72%,68%)"],[332,1.0,11.5,"hsl(214,85%,64%)"],[20,1.08,13,"hsl(220,14%,92%)"],[150,0.95,9.5,"hsl(44,92%,60%)"]];
-GIFTS.forEach(([deg,dist,s,col],gi)=>{const n0=0,cx=R*dist*Math.cos(deg*Math.PI/180),cz=R*dist*Math.sin(deg*Math.PI/180),n=6,thr=11+gi*0.45;
+GIFTS.forEach(([deg,dist,s,col],gi)=>{const n0=0,cx=R*dist*Math.cos(deg*Math.PI/180),cz=R*dist*Math.sin(deg*Math.PI/180),n=6,thr=7.5+gi*0.45;
   const face=(fx,fy,fz,nx,ny,nz,rib)=>add({k:4,x:cx+fx,y:fy,z:cz+fz,nx,ny,nz,g:rib?pick("=+"):pick("%&*ox#o@"),m:1.5,rot:0,col:rib?"hsl(48,95%,82%)":col,thr,gi,ph:0});
   for(let i=0;i<n;i++)for(let j=0;j<n;j++){const a=(i/(n-1)-0.5)*s,b=(j/(n-1)-0.5)*s,rib=Math.abs(a)<s*0.09;
     face(a,s*0.9,b,0,1,0,rib||Math.abs(b)<s*0.09);
@@ -83,7 +83,7 @@ function draw(t){
   ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,cv.width,cv.height);ctx.font=FONT;
   const ang=angle*Math.PI/180,c=Math.cos(ang),s=Math.sin(ang),ct=Math.cos(tilt),st=Math.sin(tilt);
   const cx=cw/2,cy=chh*0.5+4;
-  const prog=clamp(t/5,0,1),starA=clamp((t-10.5)/0.8,0,1);
+  const prog=clamp(t/5,0,1),starA=clamp((t-6.8)/0.8,0,1);
   // sky
   for(const q of stars){const a=0.25+0.6*(0.5+0.5*Math.sin(t*q.sp+q.ph));ctx.globalAlpha=a;ctx.fillStyle="#dfe8ff";
     ctx.setTransform(DPR*q.s,0,0,DPR*q.s,q.x*cw*DPR,q.y*chh*DPR);ctx.fillText(q.g,0,0);}
@@ -96,11 +96,11 @@ function draw(t){
   // project
   order.length=0;let letters=0,lit=0;
   for(let i=0;i<P.length;i++){const p=P[i];let d,dur=2.2;
-    if(p.k===0)d=p.rank*3.8;else if(p.k===1){d=(i%97)/97*1.4;dur=1.5}else if(p.k===2){d=7+p.gu*2.5;dur=1.5}else{d=p.thr;dur=1.3}
+    if(p.k===0){d=clamp(p.y/H,0,1)*3.4+p.rank*0.6;dur=1.6}else if(p.k===1){d=(i%97)/97*0.8;dur=1.2}else if(p.k===2){d=1.2+p.gu*3.6;dur=1.2}else if(p.k===3){d=p.thr;dur=1.2}else{d=p.thr;dur=0.5}
     if(t<d)continue;if(p.k===0)letters++;
-    const q=clamp((t-d)/dur,0,1),e=1-Math.pow(1-q,3),w=1-e;Q[i]=q;E[i]=e;
-    let lx=p.x+(p.sx-p.x)*w,ly=p.y+(p.sy-p.y)*w,lz=p.z+(p.sz-p.z)*w;
-    if(w>0){const sw=w*2.2,cs=Math.cos(sw),sn=Math.sin(sw),tx=lx*cs-lz*sn;lz=lx*sn+lz*cs;lx=tx}
+    const q=clamp((t-d)/dur,0,1),e=p.k===4?1:1-Math.pow(1-q,3),w=1-e;Q[i]=q;E[i]=e;
+    let lx=p.x+(p.sx-p.x)*w,ly=p.k===4?p.y*ease((t-d)/0.6):p.y+(p.sy-p.y)*w,lz=p.z+(p.sz-p.z)*w;
+    if(w>0){const sw=w*1.2,cs=Math.cos(sw),sn=Math.sin(sw),tx=lx*cs-lz*sn;lz=lx*sn+lz*cs;lx=tx}
     const x=lx*c+lz*s,z=-lx*s+lz*c,y1=ly-HC,y2=y1*ct-z*st,z2=y1*st+z*ct,sc=DCAM/(DCAM-z2);
     SX[i]=cx+x*K*sc;SY[i]=cy-y2*K*sc;SC[i]=sc;depth[i]=z2;order.push(i);}
   order.sort((a,b)=>depth[a]-depth[b]);
