@@ -24,140 +24,175 @@ body { margin: 0; background: var(--bg); background-image: linear-gradient(var(-
   <div id="hint">drag to rotate · tap to replay</div>
 </div>
 <script>
-const cv=document.getElementById("c"),ctx=cv.getContext("2d"),hud=document.getElementById("hud");
+const cv=document.getElementById("c"),hud=document.getElementById("hud");
 const TAU=Math.PI*2,H=100,R=38,DCAM=300,HC=48,N_FOL=3000,N_LIGHT=99,N_GAR=1100;
+const DPR=Math.min(2,devicePixelRatio||1);
+// WebGL2 draws every letter in a single instanced call; plain 2D canvas is the fallback
+const GL=/[?&]2d/.test(location.search)?null:cv.getContext("webgl2",{alpha:true,premultipliedAlpha:true,antialias:false});
+const ctx=GL?null:cv.getContext("2d");
 let seed=3;const rnd=()=>{seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296};
 const pick=s=>s[Math.floor(rnd()*s.length)];
 const clamp=(v,a,b)=>Math.min(b,Math.max(a,v)),ease=t=>1-Math.pow(1-clamp(t,0,1),3);
 const GLYPH="&@#MWVxo=%*+<>~^v/|0OXZ";
+// colours are [css string, r, g, b]
+function hsl2rgb(h,s,l){h/=360;s/=100;l/=100;const f=n=>{const k=(n+h*12)%12,a=s*Math.min(l,1-l);return l-a*Math.max(-1,Math.min(k-3,9-k,1))};return[f(0),f(8),f(4)]}
+const C=(h,s,l)=>["hsl("+h+","+s+"%,"+l+"%)",...hsl2rgb(h,s,l)];
+const HEX=h=>{const n=parseInt(h.slice(1),16);return[h,(n>>16&255)/255,(n>>8&255)/255,(n&255)/255]};
+
+// ---- glyph atlas (white letters, tinted per instance) ----
+const CHARS=[...new Set(GLYPH+"#H|M-=:@0O%&*ox+·. ")].join(""),CELL=64,GCELL=CHARS.length;
+const cellOf={};[...CHARS].forEach((ch,i)=>cellOf[ch]=i);
+let atlas=null;
+if(GL){atlas=document.createElement("canvas");atlas.width=atlas.height=CELL*8;const a=atlas.getContext("2d");
+  a.font="44px ui-monospace, Menlo, Consolas, monospace";a.textAlign="center";a.textBaseline="middle";a.fillStyle="#fff";
+  [...CHARS].forEach((ch,i)=>a.fillText(ch,(i%8)*CELL+CELL/2,Math.floor(i/8)*CELL+CELL/2+2));
+  const gx=(GCELL%8)*CELL,gy=Math.floor(GCELL/8)*CELL,g=a.createRadialGradient(gx+32,gy+32,0,gx+32,gy+32,32);
+  g.addColorStop(0,"rgba(255,255,255,1)");g.addColorStop(0.25,"rgba(255,255,255,0.53)");g.addColorStop(1,"rgba(255,255,255,0)");a.fillStyle=g;a.fillRect(gx,gy,CELL,CELL);}
+const GLYPH_PX=CELL/44*14; // quad edge in css px for size=1 (a 14px font)
+
+// ---- renderer: emit() queues a letter, pass() flushes and sets blend mode ----
+const MAXI=9000,inst=new Float32Array(MAXI*9);let ni=0,addMode=false,prog=null,vbuf=null,u_res=null,u_add=null,lastCol="",ctx2Op="source-over";
+const glowCache={};
+function initGL(){
+  const vs=`#version 300 es
+in vec2 a_pos;in vec2 a_sr;in float a_cell;in vec4 a_col;uniform vec2 u_res;out vec2 v_uv;out vec4 v_col;
+void main(){vec2 c=vec2(float(gl_VertexID&1),float(gl_VertexID>>1));vec2 q=(c-0.5)*a_sr.x;float cs=cos(a_sr.y),sn=sin(a_sr.y);
+vec2 p=a_pos+vec2(q.x*cs-q.y*sn,q.x*sn+q.y*cs);gl_Position=vec4(p.x/u_res.x*2.0-1.0,1.0-p.y/u_res.y*2.0,0.0,1.0);
+v_uv=(vec2(mod(a_cell,8.0),floor(a_cell/8.0))+c)/8.0;v_col=a_col;}`;
+  const fs=`#version 300 es
+precision mediump float;uniform sampler2D u_tex;uniform float u_add;in vec2 v_uv;in vec4 v_col;out vec4 o;
+void main(){float a=texture(u_tex,v_uv).a*v_col.a;o=vec4(v_col.rgb*a,a*(1.0-u_add));}`;
+  const sh=(t,src)=>{const o=GL.createShader(t);GL.shaderSource(o,src);GL.compileShader(o);if(!GL.getShaderParameter(o,GL.COMPILE_STATUS))throw new Error(GL.getShaderInfoLog(o));return o};
+  prog=GL.createProgram();GL.attachShader(prog,sh(GL.VERTEX_SHADER,vs));GL.attachShader(prog,sh(GL.FRAGMENT_SHADER,fs));GL.linkProgram(prog);
+  if(!GL.getProgramParameter(prog,GL.LINK_STATUS))throw new Error(GL.getProgramInfoLog(prog));
+  GL.useProgram(prog);u_res=GL.getUniformLocation(prog,"u_res");u_add=GL.getUniformLocation(prog,"u_add");
+  const vao=GL.createVertexArray();GL.bindVertexArray(vao);vbuf=GL.createBuffer();GL.bindBuffer(GL.ARRAY_BUFFER,vbuf);GL.bufferData(GL.ARRAY_BUFFER,inst.byteLength,GL.DYNAMIC_DRAW);
+  [["a_pos",2,0],["a_sr",2,8],["a_cell",1,16],["a_col",4,20]].forEach(([n,sz,off])=>{const l=GL.getAttribLocation(prog,n);GL.enableVertexAttribArray(l);GL.vertexAttribPointer(l,sz,GL.FLOAT,false,36,off);GL.vertexAttribDivisor(l,1)});
+  const tex=GL.createTexture();GL.bindTexture(GL.TEXTURE_2D,tex);GL.texImage2D(GL.TEXTURE_2D,0,GL.RGBA,GL.RGBA,GL.UNSIGNED_BYTE,atlas);GL.generateMipmap(GL.TEXTURE_2D);
+  GL.texParameteri(GL.TEXTURE_2D,GL.TEXTURE_MIN_FILTER,GL.LINEAR_MIPMAP_LINEAR);GL.texParameteri(GL.TEXTURE_2D,GL.TEXTURE_MAG_FILTER,GL.LINEAR);
+  GL.uniform1i(GL.getUniformLocation(prog,"u_tex"),0);GL.enable(GL.BLEND);GL.blendFunc(GL.ONE,GL.ONE_MINUS_SRC_ALPHA);GL.clearColor(0,0,0,0);
+}
+if(GL)initGL();
+function flush(){if(!GL||!ni)return;GL.uniform1f(u_add,addMode?1:0);GL.bufferSubData(GL.ARRAY_BUFFER,0,inst,0,ni*9);GL.drawArraysInstanced(GL.TRIANGLE_STRIP,0,4,ni);ni=0}
+function pass(add){flush();addMode=add;if(!GL)ctx.globalCompositeOperation=add?"lighter":"source-over"}
+function put(cell,x,y,edge,rot,c,a){if(ni>=MAXI)flush();const o=ni*9;inst[o]=x;inst[o+1]=y;inst[o+2]=edge;inst[o+3]=rot;inst[o+4]=cell;inst[o+5]=c[1];inst[o+6]=c[2];inst[o+7]=c[3];inst[o+8]=a;ni++}
+// letter: size is a multiplier on a 14px font
+function emit(ch,c,x,y,size,rot,a){
+  if(GL){put(cellOf[ch],x,y,GLYPH_PX*size,rot,c,a);return}
+  const cr=Math.cos(rot)*size*DPR,sr=Math.sin(rot)*size*DPR;ctx.globalAlpha=a;if(c[0]!==lastCol){ctx.fillStyle=c[0];lastCol=c[0]}
+  ctx.setTransform(cr,sr,-sr,cr,x*DPR,y*DPR);ctx.fillText(ch,0,0)}
+function glow(c,x,y,r,a){
+  if(GL){put(GCELL,x,y,r*2,0,c,a);return}
+  let g=glowCache[c[0]];if(!g){g=document.createElement("canvas");g.width=g.height=64;const q=g.getContext("2d"),rg=q.createRadialGradient(32,32,0,32,32,32),rgb=[1,2,3].map(i=>Math.round(c[i]*255)).join(",");
+    rg.addColorStop(0,"rgba("+rgb+",1)");rg.addColorStop(0.25,"rgba("+rgb+",0.53)");rg.addColorStop(1,"rgba("+rgb+",0)");q.fillStyle=rg;q.fillRect(0,0,64,64);glowCache[c[0]]=g}
+  ctx.globalAlpha=a;ctx.setTransform(DPR,0,0,DPR,0,0);ctx.drawImage(g,x-r,y-r,r*2,r*2)}
 
 // radius of the tree at height y: smooth cone with tucked-in tiers
 function rAt(y){const u=clamp(y/H,0,1),d=1-u,base=R*Math.pow(1-u,0.92);
   if(d<0.06)return base;const fr=(d*7)%1;return base*(0.84+0.16*Math.pow(fr,1.2));}
-const P=[]; // all particles
+const P=[];
+// the scattered start is close to the final spot, so letters fly in from nearby
 function add(o){o.sx=o.x+(rnd()-0.5)*26;o.sy=o.y+(rnd()-0.5)*18-3;o.sz=o.z+(rnd()-0.5)*26;P.push(o);return o}
-// foliage
+const SNOW=[0,1,2,3].map(i=>C(210,40,78+i/3*14));
 for(let i=0;i<N_FOL;i++){const u=clamp(1-Math.sqrt(rnd()),0.015,0.995),y=u*H,a=rnd()*TAU,rs=rAt(y),f=0.25+0.75*Math.pow(rnd(),0.45),r=rs*f;
-  const l=Math.round((24+30*f+rnd()*9)/5)*5,hue=pick([134,146,158]),sat=pick([42,56]);
+  const l=Math.round((24+30*f+rnd()*9)/5)*5,snow=u>0.74&&rnd()<0.8?rnd():-1;
   add({k:0,x:r*Math.cos(a),y:y-rnd()*2.2*f,z:r*Math.sin(a),nx:Math.cos(a),ny:0.35,nz:Math.sin(a),g:pick(GLYPH),m:1.0+rnd()*0.75,rot:(rnd()-0.5)*1.6,
-    col:`hsl(${hue},${sat}%,${l}%)`,snow:u>0.74&&rnd()<0.8?rnd():-1,rank:i/N_FOL,ph:rnd()*TAU});}
-for(let i=0;i<N_FOL;i++){} // ranks already random: particles are generated in random order
-// trunk
+    c:C(pick([134,146,158]),pick([42,56]),l),snow,sl:Math.round(snow*3),rank:i/N_FOL,ph:rnd()*TAU});}
 for(let i=0;i<170;i++){const a=rnd()*TAU,y=-9+rnd()*17,r=3.8*Math.sqrt(rnd())+0.6;
-  add({k:1,x:r*Math.cos(a),y,z:r*Math.sin(a),nx:Math.cos(a),ny:0,nz:Math.sin(a),g:pick("#H|MH#"),m:1.0+rnd()*0.3,rot:(rnd()-0.5)*0.3,col:`hsl(${pick([24,30])},60%,${pick([32,38,44,50])}%)`,rank:0,ph:0});}
-// gold garland
+  add({k:1,x:r*Math.cos(a),y,z:r*Math.sin(a),nx:Math.cos(a),ny:0,nz:Math.sin(a),g:pick("#H|MH#"),m:1.0+rnd()*0.3,rot:(rnd()-0.5)*0.3,c:C(pick([24,30]),60,pick([32,38,44,50])),rank:0,ph:0});}
 for(let i=0;i<N_GAR;i++){const u=i/N_GAR,y=H*(0.07+0.86*u),a=u*TAU*4.6+0.3,r=R*Math.pow(1-y/H,0.92)*1.05+1.0+rnd()*0.5;
-  add({k:2,x:r*Math.cos(a),y:y+(rnd()-0.5)*0.7,z:r*Math.sin(a),nx:Math.cos(a),ny:0.3,nz:Math.sin(a),g:pick("-=-:"),m:0.85+rnd()*0.3,rot:(rnd()-0.5)*0.5,col:`hsl(${pick([44,48,50])},95%,${pick([58,64,70])}%)`,gu:u,rank:0,ph:0});}
-// lights
-const LC=["#ff7aa8","#6ab0ff","#4de0d0","#ffa04d","#ff5a5a","#ffe27a","#c8a0ff","#ffffff"];
+  add({k:2,x:r*Math.cos(a),y:y+(rnd()-0.5)*0.7,z:r*Math.sin(a),nx:Math.cos(a),ny:0.3,nz:Math.sin(a),g:pick("-=-:"),m:0.85+rnd()*0.3,rot:(rnd()-0.5)*0.5,c:C(pick([44,48,50]),95,pick([58,64,70])),gu:u,rank:0,ph:0});}
+const LC=["#ff7aa8","#6ab0ff","#4de0d0","#ffa04d","#ff5a5a","#ffe27a","#c8a0ff","#ffffff"].map(HEX);
 for(let i=0;i<N_LIGHT;i++){const y=H*(0.08+0.84*Math.pow(rnd(),0.9)),a=rnd()*TAU,r=rAt(y)*(0.92+rnd()*0.14);
-  add({k:3,x:r*Math.cos(a),y,z:r*Math.sin(a),nx:Math.cos(a),ny:0.3,nz:Math.sin(a),g:pick("@0O@"),m:1.35+rnd()*0.35,rot:0,col:LC[i%LC.length],thr:2+(y/H)*4+rnd()*0.8,ph:rnd()*TAU});}
+  add({k:3,x:r*Math.cos(a),y,z:r*Math.sin(a),nx:Math.cos(a),ny:0.3,nz:Math.sin(a),g:pick("@0O@"),m:1.35+rnd()*0.35,rot:0,c:LC[i%LC.length],thr:2+(y/H)*4+rnd()*0.8,ph:rnd()*TAU});}
 // 3D star: two faceted pyramids (front and back) of letters, so it spins with the tree
+const SLV=8,STARC=[];for(let l=0;l<SLV;l++){const d=l/(SLV-1);STARC.push(C(Math.round(36+16*d),Math.round(100-30*d*d),Math.round(24+66*d)))}
 {const SR=11.5,SI=0.42*SR,T=4.2,SYC=H+5.6,sv=[];
   for(let j=0;j<10;j++){const a=Math.PI/2+j*Math.PI/5,r=j%2?SI:SR;sv.push([r*Math.cos(a),r*Math.sin(a)]);}
-  for(const sg of[1,-1])for(let j=0;j<10;j++){const A=[0,0,sg*T],B=[sv[j][0],sv[j][1],0],C=[sv[(j+1)%10][0],sv[(j+1)%10][1],0];
-    const u=[B[0]-A[0],B[1]-A[1],B[2]-A[2]],v=[C[0]-A[0],C[1]-A[1],C[2]-A[2]];
+  for(const sg of[1,-1])for(let j=0;j<10;j++){const A=[0,0,sg*T],B=[sv[j][0],sv[j][1],0],Cc=[sv[(j+1)%10][0],sv[(j+1)%10][1],0];
+    const u=[B[0]-A[0],B[1]-A[1],B[2]-A[2]],v=[Cc[0]-A[0],Cc[1]-A[1],Cc[2]-A[2]];
     let n=[u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0]];
-    const cen=[(A[0]+B[0]+C[0])/3,(A[1]+B[1]+C[1])/3,(A[2]+B[2]+C[2])/3];
+    const cen=[(A[0]+B[0]+Cc[0])/3,(A[1]+B[1]+Cc[1])/3,(A[2]+B[2]+Cc[2])/3];
     if(n[0]*cen[0]+n[1]*cen[1]+n[2]*cen[2]<0)n=n.map(q=>-q);const l=Math.hypot(n[0],n[1],n[2]);n=n.map(q=>q/l);
     for(let i=0;i<36;i++){let a=rnd(),b=rnd();if(a+b>1){a=1-a;b=1-b}
-      add({k:5,x:A[0]+a*u[0]+b*v[0],y:SYC+A[1]+a*u[1]+b*v[1],z:A[2]+a*u[2]+b*v[2],nx:n[0],ny:n[1],nz:n[2],g:"*",m:0.7+rnd()*0.15,rot:(rnd()-0.5)*0.4,col:"#ffd24a",rank:rnd(),ph:rnd()*TAU});}}}
+      add({k:5,x:A[0]+a*u[0]+b*v[0],y:SYC+A[1]+a*u[1]+b*v[1],z:A[2]+a*u[2]+b*v[2],nx:n[0],ny:n[1],nz:n[2],g:"*",m:0.7+rnd()*0.15,rot:(rnd()-0.5)*0.4,c:STARC[3],rank:rnd(),ph:rnd()*TAU});}}}
 // gift boxes made of letters
-const GIFTS=[[205,1.05,12,"hsl(2,85%,62%)"],[238,1.0,10,"hsl(268,72%,68%)"],[332,1.0,11.5,"hsl(214,85%,64%)"],[20,1.08,13,"hsl(220,14%,92%)"],[150,0.95,9.5,"hsl(44,92%,60%)"]];
-GIFTS.forEach(([deg,dist,s,col],gi)=>{const n0=0,cx=R*dist*Math.cos(deg*Math.PI/180),cz=R*dist*Math.sin(deg*Math.PI/180),n=6,thr=7.5+gi*0.45;
-  const face=(fx,fy,fz,nx,ny,nz,rib)=>add({k:4,x:cx+fx,y:fy,z:cz+fz,nx,ny,nz,g:rib?pick("=+"):pick("%&*ox#o@"),m:1.5,rot:0,col:rib?"hsl(48,95%,82%)":col,thr,gi,ph:0});
+const RIB=C(48,95,82);
+const GIFTS=[[205,1.05,12,C(2,85,62)],[238,1.0,10,C(268,72,68)],[332,1.0,11.5,C(214,85,64)],[20,1.08,13,C(220,14,92)],[150,0.95,9.5,C(44,92,60)]];
+GIFTS.forEach(([deg,dist,s,col],gi)=>{const cx=R*dist*Math.cos(deg*Math.PI/180),cz=R*dist*Math.sin(deg*Math.PI/180),n=6,thr=7.5+gi*0.45;
+  const face=(fx,fy,fz,nx,ny,nz,rib)=>add({k:4,x:cx+fx,y:fy,z:cz+fz,nx,ny,nz,m:1.5,rot:0,g:rib?pick("=+"):pick("%&*ox#o@"),c:rib?RIB:col,thr,gi,ph:0});
   for(let i=0;i<n;i++)for(let j=0;j<n;j++){const a=(i/(n-1)-0.5)*s,b=(j/(n-1)-0.5)*s,rib=Math.abs(a)<s*0.09;
     face(a,s*0.9,b,0,1,0,rib||Math.abs(b)<s*0.09);
     face(a,(j/(n-1))*s*0.9,s/2,0,0,1,rib);face(a,(j/(n-1))*s*0.9,-s/2,0,0,-1,rib);
     face(s/2,(j/(n-1))*s*0.9,a,1,0,0,rib);face(-s/2,(j/(n-1))*s*0.9,a,-1,0,0,rib);}});
-// star shape: grid of letter cells inside a five-point star
-const STAR=[];(function(){const poly=[];for(let j=0;j<10;j++){const a=-Math.PI/2+j*Math.PI/5,r=j%2?0.42:1;poly.push([r*Math.cos(a),r*Math.sin(a)]);}
-  const inside=(px,py)=>{let o=false;for(let a=0,b=9;a<10;b=a++){const[xa,ya]=poly[a],[xb,yb]=poly[b];if((ya>py)!==(yb>py)&&px<(xb-xa)*(py-ya)/(yb-ya)+xa)o=!o}return o};
-  const sxs=0.10,sys=0.14;
-  for(let iy=-7;iy<=6;iy++)for(let ix=-10;ix<=10;ix++){const x=ix*sxs,y=iy*sys;if(inside(x,y)){const edge=!(inside(x+sxs,y)&&inside(x-sxs,y)&&inside(x,y+sys)&&inside(x,y-sys));STAR.push({x,y,edge,d:Math.hypot(x,y),ph:rnd()*TAU});}}})();
 // sky
+const SKYC=HEX("#dfe8ff"),FLC=HEX("#eef3ff"),RAYC=C(48,100,82),SPARKC=HEX("#fff7d0"),GREENC=[ "g",40/255,140/255,90/255],GOLDC=["go",1,0.84,0.4];
 const stars=[];for(let i=0;i<110;i++)stars.push({x:rnd(),y:rnd(),g:pick("+*.+·"),s:0.35+rnd()*0.55,ph:rnd()*TAU,sp:0.6+rnd()*1.6});
 const flakes=[];for(let i=0;i<55;i++)flakes.push({x:rnd(),y:rnd(),g:pick("*.+"),s:0.3+rnd()*0.5,v:0.012+rnd()*0.03,ph:rnd()*TAU});
-// glow sprites for lights
-const sprites={};
-function spriteFor(c){if(sprites[c])return sprites[c];const s=document.createElement("canvas");s.width=s.height=64;const g=s.getContext("2d"),r=g.createRadialGradient(32,32,0,32,32,32);
-  r.addColorStop(0,c);r.addColorStop(0.25,c+"88");r.addColorStop(1,c+"00");g.fillStyle=r;g.fillRect(0,0,64,64);return sprites[c]=s}
-LC.forEach(spriteFor);
 
-function glowSprite(rgb,a0){const c=document.createElement("canvas");c.width=c.height=96;const g=c.getContext("2d"),r=g.createRadialGradient(48,48,0,48,48,48);
-  r.addColorStop(0,"rgba("+rgb+","+a0+")");r.addColorStop(0.3,"rgba("+rgb+","+a0*0.4+")");r.addColorStop(1,"rgba("+rgb+",0)");g.fillStyle=r;g.fillRect(0,0,96,96);return c}
-const GREEN=glowSprite("40,140,90",0.22),GOLD=glowSprite("255,214,100",0.4);
-let lod=0,lodAt=0,ema=16,fi=33,prevDraw=0,lastDraw=0,hudAt=0;
-let cw=0,chh=0,DPR=1,K=5,t0=performance.now(),angle=24,tilt=0.1,lastT=performance.now(),hold=false;
+let cw=0,chh=0,K=5,t0=performance.now(),angle=24,tilt=0.1,lastT=performance.now(),hold=false;
+let lod=0,lodAt=0,ema=8,fi=33,lastDraw=0,hudAt=0;
 const reduce=matchMedia("(prefers-reduced-motion: reduce)").matches;
-function resize(){const b=cv.getBoundingClientRect();DPR=Math.min(1.5,devicePixelRatio||1);cw=b.width;chh=b.height;cv.width=Math.round(cw*DPR);cv.height=Math.round(chh*DPR);
-  K=Math.min(chh*0.74/114,cw*0.96/(2*R*1.5));}
+function resize(){const b=cv.getBoundingClientRect();cw=b.width;chh=b.height;cv.width=Math.round(cw*DPR);cv.height=Math.round(chh*DPR);
+  K=Math.min(chh*0.74/114,cw*0.96/(2*R*1.5));if(GL){GL.viewport(0,0,cv.width,cv.height);GL.uniform2f(u_res,cw,chh)}else{ctx.font="14px ui-monospace, Menlo, Consolas, monospace";ctx.textAlign="center";ctx.textBaseline="middle"}}
 resize();addEventListener("resize",()=>{resize();if(reduce)draw(99)});
-ctx.textAlign="center";ctx.textBaseline="middle";
-const FONT='14px ui-monospace, Menlo, Consolas, monospace';
-const LX=-0.4,LY=0.5,LZ=0.75;
-const NB=96,cntArr=new Int32Array(NB+1),bkt=new Uint8Array(P.length),sorted=new Int32Array(P.length),order=[],Q=new Float32Array(P.length),E=new Float32Array(P.length),depth=new Float32Array(P.length),SX=new Float32Array(P.length),SY=new Float32Array(P.length),SC=new Float32Array(P.length);
+const LX=-0.4,LY=0.5,LZ=0.75,NP=P.length,NB=96;
+const Q=new Float32Array(NP),E=new Float32Array(NP),depth=new Float32Array(NP),SX=new Float32Array(NP),SY=new Float32Array(NP),SC=new Float32Array(NP);
+const cntArr=new Int32Array(NB+1),bkt=new Uint8Array(NP),sorted=new Int32Array(NP),order=new Int32Array(NP);
 const fmt=n=>n.toLocaleString("en-US");
 function draw(t){
-  ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,cv.width,cv.height);ctx.font=FONT;
+  if(GL)GL.clear(GL.COLOR_BUFFER_BIT);else{ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,cv.width,cv.height);lastCol=""}
   const ang=angle*Math.PI/180,c=Math.cos(ang),s=Math.sin(ang),ct=Math.cos(tilt),st=Math.sin(tilt);
-  const cx=cw/2,cy=chh*0.5+4;
-  const prog=clamp(t/5,0,1),starA=clamp((t-7.2)/0.9,0,1);
-  // sky
-  for(const q of stars){const a=0.25+0.6*(0.5+0.5*Math.sin(t*q.sp+q.ph));ctx.globalAlpha=a;ctx.fillStyle="#dfe8ff";
-    ctx.setTransform(DPR*q.s,0,0,DPR*q.s,q.x*cw*DPR,q.y*chh*DPR);ctx.fillText(q.g,0,0);}
-  for(const f of flakes){const y=((f.y+t*f.v)%1),x=f.x+Math.sin(t*0.6+f.ph)*0.012;ctx.globalAlpha=0.55;ctx.fillStyle="#eef3ff";
-    ctx.setTransform(DPR*f.s,0,0,DPR*f.s,x*cw*DPR,y*chh*DPR);ctx.fillText(f.g,0,0);}
-  // soft glow behind the tree
-  ctx.setTransform(DPR,0,0,DPR,0,0);
-  {const r=K*62;ctx.globalAlpha=Math.min(1,prog*0.9+0.1);ctx.drawImage(GREEN,cx-r,cy-r,r*2,r*2);}
-  // project
-  order.length=0;let letters=0,lit=0;
-  for(let i=0;i<P.length;i++){const p=P[i];let d,dur=2.2;
-    if(p.k===0){d=clamp(p.y/H,0,1)*3.4+p.rank*0.6;dur=1.6}else if(p.k===1){d=(i%97)/97*0.8;dur=1.2}else if(p.k===2){d=1.2+p.gu*3.6;dur=1.2}else if(p.k===3){d=p.thr;dur=1.2}else if(p.k===5){d=6.4+p.rank*0.8;dur=1.1}else{d=p.thr;dur=0.5}
-    if(t<d)continue;if(p.k===0)letters++;if(lod&&p.k<=2&&i%(lod===1?4:2)===0)continue;
-    const q=clamp((t-d)/dur,0,1),e=p.k===4?1:1-Math.pow(1-q,3),w=1-e;Q[i]=q;E[i]=e;
-    let lx=p.x+(p.sx-p.x)*w,ly=p.k===4?p.y*ease((t-d)/0.6):p.y+(p.sy-p.y)*w,lz=p.z+(p.sz-p.z)*w;
+  const cx=cw/2,cy=chh*0.5+4,prog=clamp(t/5,0,1),starA=clamp((t-7.2)/0.9,0,1);
+  pass(true);glow(GREENC,cx,cy,K*62,0.22*Math.min(1,prog*0.9+0.1));
+  pass(false);
+  for(const q of stars)emit(q.g,SKYC,q.x*cw,q.y*chh,q.s,0,0.25+0.6*(0.5+0.5*Math.sin(t*q.sp+q.ph)));
+  for(const f of flakes)emit(f.g,FLC,(f.x+Math.sin(t*0.6+f.ph)*0.012)*cw,((f.y+t*f.v)%1)*chh,f.s,0,0.55);
+  // project visible particles
+  let M=0,letters=0;
+  for(let i=0;i<NP;i++){const p=P[i];let d,dur=2.2;const k=p.k;
+    if(k===0){d=clamp(p.y/H,0,1)*3.4+p.rank*0.6;dur=1.6}else if(k===1){d=(i%97)/97*0.8;dur=1.2}else if(k===2){d=1.2+p.gu*3.6;dur=1.2}else if(k===3){d=p.thr;dur=1.2}else if(k===5){d=6.4+p.rank*0.8;dur=1.1}else{d=p.thr;dur=0.5}
+    if(t<d)continue;if(k===0)letters++;if(lod&&k<=2&&i%(lod===1?4:2)===0)continue;
+    const q=clamp((t-d)/dur,0,1),e=k===4?1:1-Math.pow(1-q,3),w=1-e;Q[i]=q;E[i]=e;
+    let lx=p.x+(p.sx-p.x)*w,ly=k===4?p.y*ease((t-d)/0.6):p.y+(p.sy-p.y)*w,lz=p.z+(p.sz-p.z)*w;
     if(w>0){const sw=w*1.2,cs=Math.cos(sw),sn=Math.sin(sw),tx=lx*cs-lz*sn;lz=lx*sn+lz*cs;lx=tx}
     const x=lx*c+lz*s,z=-lx*s+lz*c,y1=ly-HC,y2=y1*ct-z*st,z2=y1*st+z*ct,sc=DCAM/(DCAM-z2);
-    SX[i]=cx+x*K*sc;SY[i]=cy-y2*K*sc;SC[i]=sc;depth[i]=z2;order.push(i);}
-  const M=order.length;cntArr.fill(0);
-  for(let j=0;j<M;j++){const i=order[j],b=clamp(((depth[i]+70)*(NB/140))|0,0,NB-1);bkt[i]=b;cntArr[b+1]++}
+    SX[i]=cx+x*K*sc;SY[i]=cy-y2*K*sc;SC[i]=sc;depth[i]=z2;
+    const b=clamp(((z2+70)*(NB/140))|0,0,NB-1);bkt[i]=b;cntArr[b+1]++;order[M++]=i;}
   for(let b=0;b<NB;b++)cntArr[b+1]+=cntArr[b];
   for(let j=0;j<M;j++){const i=order[j];sorted[cntArr[bkt[i]]++]=i}
-  const glow=[];let lastCol="";
-  for(let jj=0;jj<M;jj++){const i=sorted[jj],p=P[i],sc=SC[i];
+  cntArr.fill(0);
+  let lit=0;const gl=[];
+  for(let jj=0;jj<M;jj++){const i=sorted[jj],p=P[i],sc=SC[i],k=p.k;
     const nx=p.nx*c+p.nz*s,nz=-p.nx*s+p.nz*c,ny=p.ny*ct-nz*st,nz2=p.ny*st+nz*ct;
-    const lt=0.58+0.42*Math.max(0,nx*LX+ny*LY+nz2*LZ),dA=clamp(0.42+0.58*(depth[i]+R)/(2*R),0.25,1);
-    let gch=p.g,a=clamp(lt*dA*1.05,0.12,1),col=p.col,m=p.m*(0.6+0.4*E[i]);
-    if(p.k===0&&p.snow>=0&&p.snow>t/9)col="hsl(210,40%,"+(78+Math.round(p.snow*3)/3*14)+"%)";
-    else if(p.k===3){const on=0.5+0.5*Math.sin(t*2.2+p.ph);const v=clamp((on-0.15)/0.6,0,1);a=clamp(dA*(0.35+0.65*v),0,1);if(on>0.3&&Q[i]>0.99)lit++;
-      if(depth[i]>-R*0.4&&a>0.5&&Q[i]>0.99)glow.push(i,v*a);}
-    else if(p.k===2){a*=0.95}
-    else if(p.k===5){const dd=Math.round(clamp(Math.max(0,nx*LX+ny*LY+nz2*LZ)*1.5-0.05,0,1)*7)/7;a=0.55+0.45*dd;col="hsl("+(36+16*dd)+","+(100-30*dd*dd)+"%,"+(24+66*dd)+"%)";gch=dd>0.75?"@":(dd>0.4?"#":"*")}
-    else if(p.k===4){a=clamp(lt*1.15,0,1);}
-    a*=clamp(Q[i]*2.5,0,1);const size=K*sc*1.9*m/14,w=Math.sin(t*1.3+p.ph)*0.04;
-    const cr=Math.cos(p.rot+w),sr=Math.sin(p.rot+w);
-    ctx.globalAlpha=a;if(col!==lastCol){ctx.fillStyle=col;lastCol=col}ctx.setTransform(DPR*size*cr,DPR*size*sr,-DPR*size*sr,DPR*size*cr,SX[i]*DPR,SY[i]*DPR);ctx.fillText(gch,0,0);}
-  // additive glow around lit bulbs
-  ctx.globalCompositeOperation="lighter";
-  for(let j=0;j<glow.length;j+=2){const i=glow[j],p=P[i],r=K*SC[i]*3.6;ctx.globalAlpha=glow[j+1]*0.55;ctx.setTransform(DPR,0,0,DPR,0,0);
-    ctx.drawImage(spriteFor(p.col),SX[i]-r,SY[i]-r,r*2,r*2);}
-  ctx.globalCompositeOperation="source-over";
-  // star on top: dense letter star with bright rim, shimmer, rays and sparkles
-  if(starA>0){const y1=(H+6.8)-HC,y2=y1*ct,z2=y1*st,sc=DCAM/(DCAM-z2),sx0=cx,sy0=cy-y2*K*sc;
-    const pop=0.5+0.5*ease((t-6.8)/0.8),Ro=K*sc*11.5*pop*(1+0.035*Math.sin(t*3)),sz=K*sc*1.9*pop/14;
-    ctx.setTransform(DPR,0,0,DPR,0,0);
-    {const pul=0.85+0.15*Math.sin(t*2.4);ctx.globalAlpha=starA*pul;ctx.drawImage(GOLD,sx0-Ro*3.4,sy0-Ro*3.4,Ro*6.8,Ro*6.8);ctx.globalAlpha=starA*pul*0.8;ctx.drawImage(GOLD,sx0-Ro*1.7,sy0-Ro*1.7,Ro*3.4,Ro*3.4);}
-    ctx.fillStyle="hsl(48,100%,82%)";
+    const dot=nx*LX+ny*LY+nz2*LZ,lt=0.58+0.42*Math.max(0,dot),dA=clamp(0.42+0.58*(depth[i]+R)/(2*R),0.25,1);
+    let a=clamp(lt*dA*1.05,0.12,1),col=p.c,gch=p.g;
+    if(k===0){if(p.snow>=0&&p.snow>t/9)col=SNOW[p.sl]}
+    else if(k===3){const on=0.5+0.5*Math.sin(t*2.2+p.ph),v=clamp((on-0.15)/0.6,0,1);a=clamp(dA*(0.35+0.65*v),0,1);
+      if(Q[i]>0.99){if(on>0.3)lit++;if(depth[i]>-R*0.4&&a>0.5)gl.push(i,v*a)}}
+    else if(k===2)a*=0.95;
+    else if(k===4)a=clamp(lt*1.15,0,1);
+    else if(k===5){const dd=clamp(Math.max(0,dot)*1.5-0.05,0,1);a=0.55+0.45*dd;col=STARC[Math.round(dd*(SLV-1))];gch=dd>0.75?"@":(dd>0.4?"#":"*")}
+    a*=clamp(Q[i]*2.5,0,1);
+    emit(gch,col,SX[i],SY[i],K*sc*1.9*p.m*(0.6+0.4*E[i])/14,p.rot+Math.sin(t*1.3+p.ph)*0.04,a);}
+  // additive glow around lit bulbs and behind the star
+  pass(true);
+  for(let j=0;j<gl.length;j+=2){const i=gl[j];glow(P[i].c,SX[i],SY[i],K*SC[i]*3.6,gl[j+1]*0.55)}
+  let sx0=0,sy0=0,Ro=0,sz=0;
+  if(starA>0){const y1=(H+6.8)-HC,y2=y1*ct,z2=y1*st,sc=DCAM/(DCAM-z2);sx0=cx;sy0=cy-y2*K*sc;
+    const pop=0.5+0.5*ease((t-7.2)/0.9),pul=0.85+0.15*Math.sin(t*2.4);Ro=K*sc*11.5*pop;sz=K*sc*1.9*pop/14;
+    glow(GOLDC,sx0,sy0,Ro*3.4,starA*pul*0.4);glow(GOLDC,sx0,sy0,Ro*1.7,starA*pul*0.32);}
+  pass(false);
+  if(starA>0){
     [[0,-1],[0,1],[-1,0],[1,0],[0.7,-0.7],[-0.7,-0.7],[0.7,0.7],[-0.7,0.7]].forEach(([dx,dy],ri)=>{const diag=ri>3;
       for(let n=1;n<=(diag?4:7);n++){const d=(1.2+n*0.3)*Ro,al=starA*(1-n/(diag?5:8))*(0.45+0.55*Math.sin(t*3.5+ri*1.3)**2)*(diag?0.6:1);
-        ctx.globalAlpha=al;ctx.setTransform(DPR*sz*0.9,0,0,DPR*sz*0.9,(sx0+dx*d)*DPR,(sy0+dy*d*(diag?1:0.8))*DPR);ctx.fillText(diag?"·":(dx?"-":"|"),0,0);}});
-    ctx.fillStyle="#fff7d0";
-    for(let i=0;i<6;i++){const ang=t*0.8+i*1.05,rr=(1.55+0.25*Math.sin(t*1.7+i))*Ro;
-      ctx.globalAlpha=starA*(0.3+0.7*Math.max(0,Math.sin(t*4+i*2)));ctx.setTransform(DPR*sz,0,0,DPR*sz,(sx0+Math.cos(ang)*rr)*DPR,(sy0+Math.sin(ang)*rr*0.8)*DPR);ctx.fillText("*",0,0);}}
-  ctx.globalAlpha=1;ctx.setTransform(1,0,0,1,0,0);
-  const nowH=performance.now();if(nowH-hudAt>100||reduce){hudAt=nowH;hud.textContent="rotation "+(((angle%360)+360)%360).toFixed(2)+"°\nlights   "+lit+"\nletters  "+fmt(letters);}
+        emit(diag?"·":(dx?"-":"|"),RAYC,sx0+dx*d,sy0+dy*d*(diag?1:0.8),sz*0.9,0,al);}});
+    for(let i=0;i<6;i++){const an=t*0.8+i*1.05,rr=(1.55+0.25*Math.sin(t*1.7+i))*Ro;
+      emit("*",SPARKC,sx0+Math.cos(an)*rr,sy0+Math.sin(an)*rr*0.8,sz,0,starA*(0.3+0.7*Math.max(0,Math.sin(t*4+i*2))));}}
+  flush();
+  if(!GL){ctx.globalCompositeOperation="source-over";ctx.globalAlpha=1;ctx.setTransform(1,0,0,1,0,0)}
+  const nowH=performance.now();if(nowH-hudAt>100||reduce){hudAt=nowH;
+    hud.textContent="rotation "+(((angle%360)+360)%360).toFixed(2)+"°\nlights   "+lit+"\nletters  "+fmt(letters);}
 }
 // input: drag to rotate/tilt, tap to replay the build-up
 let down=null;
@@ -166,13 +201,14 @@ cv.addEventListener("pointermove",e=>{if(!down)return;const dx=e.clientX-down.x,
   angle-=dx*0.4;tilt=clamp(tilt+dy*0.003,0.0,0.45);down.x=e.clientX;down.y=e.clientY;if(reduce)draw(99)});
 const up=()=>{if(down&&down.moved<8&&performance.now()-down.t<400){t0=performance.now();if(reduce)draw(99)}down=null;hold=false;cv.style.cursor="grab"};
 cv.addEventListener("pointerup",up);cv.addEventListener("pointercancel",()=>{down=null;hold=false});
-// 30 fps is plenty here and halves the work; pause when hidden; lower detail automatically if the device is struggling
-function loop(now){requestAnimationFrame(loop);if(document.hidden||now-lastDraw<30)return;
+// WebGL is cheap enough for 60 fps; the 2D fallback is capped at 30 fps and lowers detail by itself when the device struggles
+const MINDT=GL?15:30;
+function loop(now){requestAnimationFrame(loop);if(document.hidden||now-lastDraw<MINDT)return;
   fi=fi*0.9+(now-lastDraw)*0.1;lastDraw=now;
   const dt=Math.min(0.1,(now-lastT)/1000);lastT=now;if(!hold)angle+=15.5*dt;
   const t1=performance.now();draw((now-t0)/1000);ema=ema*0.9+(performance.now()-t1)*0.1;
-  if((ema>20||fi>46)&&lod<2&&now-lodAt>1500){lod++;lodAt=now}
-  else if(ema<8&&fi<36&&lod>0&&now-lodAt>8000){lod--;lodAt=now}}
+  if((ema>(GL?10:20)||fi>(GL?30:46))&&lod<2&&now-lodAt>1500){lod++;lodAt=now}
+  else if(ema<(GL?3:8)&&fi<(GL?20:36)&&lod>0&&now-lodAt>8000){lod--;lodAt=now}}
 if(reduce)draw(99);else{lastT=performance.now();requestAnimationFrame(loop)}
 </script>
 
