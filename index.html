@@ -201,14 +201,14 @@ cv.addEventListener("pointermove",e=>{if(!down)return;const dx=e.clientX-down.x,
   angle-=dx*0.4;tilt=clamp(tilt+dy*0.003,0.0,0.45);down.x=e.clientX;down.y=e.clientY;if(reduce)draw(99)});
 const up=()=>{if(down&&down.moved<8&&performance.now()-down.t<400){t0=performance.now();if(reduce)draw(99)}down=null;hold=false;cv.style.cursor="grab"};
 cv.addEventListener("pointerup",up);cv.addEventListener("pointercancel",()=>{down=null;hold=false});
-// WebGL is cheap enough for 60 fps; the 2D fallback is capped at 30 fps and lowers detail by itself when the device struggles
-const MINDT=GL?15:30;
+// capped at 30 fps; detail lowers by itself when the device struggles
+const MINDT=30;
 function loop(now){requestAnimationFrame(loop);if(document.hidden||now-lastDraw<MINDT)return;
   fi=fi*0.9+(now-lastDraw)*0.1;lastDraw=now;
   const dt=Math.min(0.1,(now-lastT)/1000);lastT=now;if(!hold)angle+=15.5*dt;
   const t1=performance.now();draw((now-t0)/1000);ema=ema*0.9+(performance.now()-t1)*0.1;
-  if((ema>(GL?10:20)||fi>(GL?30:46))&&lod<2&&now-lodAt>1500){lod++;lodAt=now}
-  else if(ema<(GL?3:8)&&fi<(GL?20:36)&&lod>0&&now-lodAt>8000){lod--;lodAt=now}}
+  if((ema>(GL?10:20)||fi>(GL?46:46))&&lod<2&&now-lodAt>1500){lod++;lodAt=now}
+  else if(ema<(GL?3:8)&&fi<36&&lod>0&&now-lodAt>8000){lod--;lodAt=now}}
 if(reduce)draw(99);else{lastT=performance.now();requestAnimationFrame(loop)}
 </script>
 
