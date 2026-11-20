@@ -52,6 +52,16 @@ for(let i=0;i<N_GAR;i++){const u=i/N_GAR,y=H*(0.07+0.86*u),a=u*TAU*4.6+0.3,r=R*M
 const LC=["#ff7aa8","#6ab0ff","#4de0d0","#ffa04d","#ff5a5a","#ffe27a","#c8a0ff","#ffffff"];
 for(let i=0;i<N_LIGHT;i++){const y=H*(0.08+0.84*Math.pow(rnd(),0.9)),a=rnd()*TAU,r=rAt(y)*(0.92+rnd()*0.14);
   add({k:3,x:r*Math.cos(a),y,z:r*Math.sin(a),nx:Math.cos(a),ny:0.3,nz:Math.sin(a),g:pick("@0O@"),m:1.35+rnd()*0.35,rot:0,col:LC[i%LC.length],thr:2+(y/H)*4+rnd()*0.8,ph:rnd()*TAU});}
+// 3D star: two faceted pyramids (front and back) of letters, so it spins with the tree
+{const SR=11.5,SI=0.42*SR,T=4.2,SYC=H+5.6,sv=[];
+  for(let j=0;j<10;j++){const a=Math.PI/2+j*Math.PI/5,r=j%2?SI:SR;sv.push([r*Math.cos(a),r*Math.sin(a)]);}
+  for(const sg of[1,-1])for(let j=0;j<10;j++){const A=[0,0,sg*T],B=[sv[j][0],sv[j][1],0],C=[sv[(j+1)%10][0],sv[(j+1)%10][1],0];
+    const u=[B[0]-A[0],B[1]-A[1],B[2]-A[2]],v=[C[0]-A[0],C[1]-A[1],C[2]-A[2]];
+    let n=[u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0]];
+    const cen=[(A[0]+B[0]+C[0])/3,(A[1]+B[1]+C[1])/3,(A[2]+B[2]+C[2])/3];
+    if(n[0]*cen[0]+n[1]*cen[1]+n[2]*cen[2]<0)n=n.map(q=>-q);const l=Math.hypot(n[0],n[1],n[2]);n=n.map(q=>q/l);
+    for(let i=0;i<36;i++){let a=rnd(),b=rnd();if(a+b>1){a=1-a;b=1-b}
+      add({k:5,x:A[0]+a*u[0]+b*v[0],y:SYC+A[1]+a*u[1]+b*v[1],z:A[2]+a*u[2]+b*v[2],nx:n[0],ny:n[1],nz:n[2],g:"*",m:0.7+rnd()*0.15,rot:(rnd()-0.5)*0.4,col:"#ffd24a",rank:rnd(),ph:rnd()*TAU});}}}
 // gift boxes made of letters
 const GIFTS=[[205,1.05,12,"hsl(2,85%,62%)"],[238,1.0,10,"hsl(268,72%,68%)"],[332,1.0,11.5,"hsl(214,85%,64%)"],[20,1.08,13,"hsl(220,14%,92%)"],[150,0.95,9.5,"hsl(44,92%,60%)"]];
 GIFTS.forEach(([deg,dist,s,col],gi)=>{const n0=0,cx=R*dist*Math.cos(deg*Math.PI/180),cz=R*dist*Math.sin(deg*Math.PI/180),n=6,thr=7.5+gi*0.45;
@@ -88,7 +98,7 @@ function draw(t){
   ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,cv.width,cv.height);ctx.font=FONT;
   const ang=angle*Math.PI/180,c=Math.cos(ang),s=Math.sin(ang),ct=Math.cos(tilt),st=Math.sin(tilt);
   const cx=cw/2,cy=chh*0.5+4;
-  const prog=clamp(t/5,0,1),starA=clamp((t-6.8)/0.8,0,1);
+  const prog=clamp(t/5,0,1),starA=clamp((t-7.2)/0.9,0,1);
   // sky
   for(const q of stars){const a=0.25+0.6*(0.5+0.5*Math.sin(t*q.sp+q.ph));ctx.globalAlpha=a;ctx.fillStyle="#dfe8ff";
     ctx.setTransform(DPR*q.s,0,0,DPR*q.s,q.x*cw*DPR,q.y*chh*DPR);ctx.fillText(q.g,0,0);}
@@ -101,7 +111,7 @@ function draw(t){
   // project
   order.length=0;let letters=0,lit=0;
   for(let i=0;i<P.length;i++){const p=P[i];let d,dur=2.2;
-    if(p.k===0){d=clamp(p.y/H,0,1)*3.4+p.rank*0.6;dur=1.6}else if(p.k===1){d=(i%97)/97*0.8;dur=1.2}else if(p.k===2){d=1.2+p.gu*3.6;dur=1.2}else if(p.k===3){d=p.thr;dur=1.2}else{d=p.thr;dur=0.5}
+    if(p.k===0){d=clamp(p.y/H,0,1)*3.4+p.rank*0.6;dur=1.6}else if(p.k===1){d=(i%97)/97*0.8;dur=1.2}else if(p.k===2){d=1.2+p.gu*3.6;dur=1.2}else if(p.k===3){d=p.thr;dur=1.2}else if(p.k===5){d=6.4+p.rank*0.8;dur=1.1}else{d=p.thr;dur=0.5}
     if(t<d)continue;if(p.k===0)letters++;
     const q=clamp((t-d)/dur,0,1),e=p.k===4?1:1-Math.pow(1-q,3),w=1-e;Q[i]=q;E[i]=e;
     let lx=p.x+(p.sx-p.x)*w,ly=p.k===4?p.y*ease((t-d)/0.6):p.y+(p.sy-p.y)*w,lz=p.z+(p.sz-p.z)*w;
@@ -113,15 +123,16 @@ function draw(t){
   for(const i of order){const p=P[i],sc=SC[i];
     const nx=p.nx*c+p.nz*s,nz=-p.nx*s+p.nz*c,ny=p.ny*ct-nz*st,nz2=p.ny*st+nz*ct;
     const lt=0.58+0.42*Math.max(0,nx*LX+ny*LY+nz2*LZ),dA=clamp(0.42+0.58*(depth[i]+R)/(2*R),0.25,1);
-    let a=clamp(lt*dA*1.05,0.12,1),col=p.col,m=p.m*(0.6+0.4*E[i]);
+    let gch=p.g,a=clamp(lt*dA*1.05,0.12,1),col=p.col,m=p.m*(0.6+0.4*E[i]);
     if(p.k===0&&p.snow>=0&&p.snow>t/9)col="hsl(210,40%,"+(78+p.snow*14)+"%)";
     else if(p.k===3){const on=0.5+0.5*Math.sin(t*2.2+p.ph);const v=clamp((on-0.15)/0.6,0,1);a=clamp(dA*(0.35+0.65*v),0,1);if(on>0.3&&Q[i]>0.99)lit++;
       if(depth[i]>-R*0.4&&a>0.5&&Q[i]>0.99)glow.push(i,v*a);}
     else if(p.k===2){a*=0.95}
+    else if(p.k===5){const dd=clamp(Math.max(0,nx*LX+ny*LY+nz2*LZ)*1.5-0.05,0,1);a=0.55+0.45*dd;col="hsl("+(36+16*dd)+","+(100-30*dd*dd)+"%,"+(24+66*dd)+"%)";gch=dd>0.75?"@":(dd>0.4?"#":"*")}
     else if(p.k===4){a=clamp(lt*1.15,0,1);}
     a*=clamp(Q[i]*2.5,0,1);const size=K*sc*1.9*m/14,w=Math.sin(t*1.3+p.ph)*0.04;
     const cr=Math.cos(p.rot+w),sr=Math.sin(p.rot+w);
-    ctx.globalAlpha=a;ctx.fillStyle=col;ctx.setTransform(DPR*size*cr,DPR*size*sr,-DPR*size*sr,DPR*size*cr,SX[i]*DPR,SY[i]*DPR);ctx.fillText(p.g,0,0);}
+    ctx.globalAlpha=a;ctx.fillStyle=col;ctx.setTransform(DPR*size*cr,DPR*size*sr,-DPR*size*sr,DPR*size*cr,SX[i]*DPR,SY[i]*DPR);ctx.fillText(gch,0,0);}
   // additive glow around lit bulbs
   ctx.globalCompositeOperation="lighter";
   for(let j=0;j<glow.length;j+=2){const i=glow[j],p=P[i],r=K*SC[i]*3.6;ctx.globalAlpha=glow[j+1]*0.55;ctx.setTransform(DPR,0,0,DPR,0,0);
@@ -138,10 +149,6 @@ function draw(t){
     [[0,-1],[0,1],[-1,0],[1,0],[0.7,-0.7],[-0.7,-0.7],[0.7,0.7],[-0.7,0.7]].forEach(([dx,dy],ri)=>{const diag=ri>3;
       for(let n=1;n<=(diag?4:7);n++){const d=(1.2+n*0.3)*Ro,al=starA*(1-n/(diag?5:8))*(0.45+0.55*Math.sin(t*3.5+ri*1.3)**2)*(diag?0.6:1);
         ctx.globalAlpha=al;ctx.setTransform(DPR*sz*0.9,0,0,DPR*sz*0.9,(sx0+dx*d)*DPR,(sy0+dy*d*(diag?1:0.8))*DPR);ctx.fillText(diag?"·":(dx?"-":"|"),0,0);}});
-    for(const q of STAR){const sh=0.5+0.5*Math.sin(t*3+q.x*3+q.y*2);
-      ctx.fillStyle=q.edge?"hsl(46,100%,"+(62+sh*16)+"%)":"hsl(48,100%,"+(72+(1-q.d)*14+sh*8)+"%)";
-      ctx.globalAlpha=starA*(q.edge?1:0.85+0.15*Math.sin(t*4+q.ph));
-      ctx.setTransform(DPR*sz,0,0,DPR*sz,(sx0+q.x*Ro)*DPR,(sy0+q.y*Ro)*DPR);ctx.fillText(q.edge?"@":(q.d<0.3?"#":"*"),0,0);}
     ctx.fillStyle="#fff7d0";
     for(let i=0;i<6;i++){const ang=t*0.8+i*1.05,rr=(1.55+0.25*Math.sin(t*1.7+i))*Ro;
       ctx.globalAlpha=starA*(0.3+0.7*Math.max(0,Math.sin(t*4+i*2)));ctx.setTransform(DPR*sz,0,0,DPR*sz,(sx0+Math.cos(ang)*rr)*DPR,(sy0+Math.sin(ang)*rr*0.8)*DPR);ctx.fillText("*",0,0);}}
