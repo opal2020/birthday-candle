@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Glyph Christmas Tree</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+:root { --bg:#070b1e; --bg2:#0c1232; --hud:#9aa6c4; --muted:#6b7696; color-scheme: dark; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); background-image: linear-gradient(var(--bg), var(--bg2));
+  padding-block: 0; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  overflow: hidden; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+#stage { position: relative; width: 100%; height: 100%; }
+#c { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+#hud { position: absolute; left: 0; bottom: 10px; margin: 0; font: inherit; font-size: 12px; line-height: 1.45; color: var(--hud); pointer-events: none; white-space: pre; }
+#hint { position: absolute; right: 0; bottom: 10px; font-size: 11px; color: var(--muted); pointer-events: none; text-align: right; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="c" aria-label="Christmas tree made of 3,000 rotating letters"></canvas>
+  <pre id="hud"></pre>
+  <div id="hint">drag to rotate · tap to replay</div>
+</div>
+<script>
+const cv=document.getElementById("c"),ctx=cv.getContext("2d"),hud=document.getElementById("hud");
+const TAU=Math.PI*2,H=100,R=38,DCAM=300,HC=48,N_FOL=3000,N_LIGHT=99,N_GAR=1100;
+let seed=3;const rnd=()=>{seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296};
+const pick=s=>s[Math.floor(rnd()*s.length)];
+const clamp=(v,a,b)=>Math.min(b,Math.max(a,v)),ease=t=>1-Math.pow(1-clamp(t,0,1),3);
+const GLYPH="&@#MWVxo=%*+<>~^v/|0OXZ";
+
+// radius of the tree at height y: smooth cone with tucked-in tiers
+function rAt(y){const u=clamp(y/H,0,1),d=1-u,base=R*Math.pow(1-u,0.92);
+  if(d<0.06)return base;const fr=(d*7)%1;return base*(0.84+0.16*Math.pow(fr,1.2));}
+const P=[]; // all particles
+function add(o){P.push(o);return o}
+// foliage
+for(let i=0;i<N_FOL;i++){const u=clamp(1-Math.sqrt(rnd()),0.015,0.995),y=u*H,a=rnd()*TAU,rs=rAt(y),f=0.25+0.75*Math.pow(rnd(),0.45),r=rs*f;
+  const l=24+30*f+rnd()*9,hue=136+rnd()*26,sat=40+rnd()*24;
+  add({k:0,x:r*Math.cos(a),y:y-rnd()*2.2*f,z:r*Math.sin(a),nx:Math.cos(a),ny:0.35,nz:Math.sin(a),g:pick(GLYPH),m:1.0+rnd()*0.75,rot:(rnd()-0.5)*1.6,
+    col:`hsl(${hue},${sat}%,${l}%)`,snow:u>0.74&&rnd()<0.8?rnd():-1,rank:i/N_FOL,ph:rnd()*TAU});}
+for(let i=0;i<N_FOL;i++){} // ranks already random: particles are generated in random order
+// trunk
+for(let i=0;i<170;i++){const a=rnd()*TAU,y=-9+rnd()*17,r=3.8*Math.sqrt(rnd())+0.6;
+  add({k:1,x:r*Math.cos(a),y,z:r*Math.sin(a),nx:Math.cos(a),ny:0,nz:Math.sin(a),g:pick("#H|MH#"),m:1.0+rnd()*0.3,rot:(rnd()-0.5)*0.3,col:`hsl(${24+rnd()*10},${55+rnd()*15}%,${32+rnd()*18}%)`,rank:0,ph:0});}
+// gold garland
+for(let i=0;i<N_GAR;i++){const u=i/N_GAR,y=H*(0.07+0.86*u),a=u*TAU*4.6+0.3,r=R*Math.pow(1-y/H,0.92)*1.05+1.0+rnd()*0.5;
+  add({k:2,x:r*Math.cos(a),y:y+(rnd()-0.5)*0.7,z:r*Math.sin(a),nx:Math.cos(a),ny:0.3,nz:Math.sin(a),g:pick("-=-:"),m:0.85+rnd()*0.3,rot:(rnd()-0.5)*0.5,col:`hsl(${44+rnd()*6},95%,${58+rnd()*14}%)`,gu:u,rank:0,ph:0});}
+// lights
+const LC=["#ff7aa8","#6ab0ff","#4de0d0","#ffa04d","#ff5a5a","#ffe27a","#c8a0ff","#ffffff"];
+for(let i=0;i<N_LIGHT;i++){const y=H*(0.08+0.84*Math.pow(rnd(),0.9)),a=rnd()*TAU,r=rAt(y)*(0.92+rnd()*0.14);
+  add({k:3,x:r*Math.cos(a),y,z:r*Math.sin(a),nx:Math.cos(a),ny:0.3,nz:Math.sin(a),g:pick("@0O@"),m:1.35+rnd()*0.35,rot:0,col:LC[i%LC.length],thr:6.2+rnd()*3.6,ph:rnd()*TAU});}
+// gift boxes made of letters
+const GIFTS=[[205,1.05,12,"hsl(2,85%,62%)"],[238,1.0,10,"hsl(268,72%,68%)"],[332,1.0,11.5,"hsl(214,85%,64%)"],[20,1.08,13,"hsl(220,14%,92%)"],[150,0.95,9.5,"hsl(44,92%,60%)"]];
+GIFTS.forEach(([deg,dist,s,col],gi)=>{const n0=0,cx=R*dist*Math.cos(deg*Math.PI/180),cz=R*dist*Math.sin(deg*Math.PI/180),n=6,thr=11+gi*0.45;
+  const face=(fx,fy,fz,nx,ny,nz,rib)=>add({k:4,x:cx+fx,y:fy,z:cz+fz,nx,ny,nz,g:rib?pick("=+"):pick("%&*ox#o@"),m:1.5,rot:0,col:rib?"hsl(48,95%,82%)":col,thr,gi,ph:0});
+  for(let i=0;i<n;i++)for(let j=0;j<n;j++){const a=(i/(n-1)-0.5)*s,b=(j/(n-1)-0.5)*s,rib=Math.abs(a)<s*0.09;
+    face(a,s*0.9,b,0,1,0,rib||Math.abs(b)<s*0.09);
+    face(a,(j/(n-1))*s*0.9,s/2,0,0,1,rib);face(a,(j/(n-1))*s*0.9,-s/2,0,0,-1,rib);
+    face(s/2,(j/(n-1))*s*0.9,a,1,0,0,rib);face(-s/2,(j/(n-1))*s*0.9,a,-1,0,0,rib);}});
+// sky
+const stars=[];for(let i=0;i<150;i++)stars.push({x:rnd(),y:rnd(),g:pick("+*.+·"),s:0.35+rnd()*0.55,ph:rnd()*TAU,sp:0.6+rnd()*1.6});
+const flakes=[];for(let i=0;i<90;i++)flakes.push({x:rnd(),y:rnd(),g:pick("*.+"),s:0.3+rnd()*0.5,v:0.012+rnd()*0.03,ph:rnd()*TAU});
+// glow sprites for lights
+const sprites={};
+function spriteFor(c){if(sprites[c])return sprites[c];const s=document.createElement("canvas");s.width=s.height=64;const g=s.getContext("2d"),r=g.createRadialGradient(32,32,0,32,32,32);
+  r.addColorStop(0,c);r.addColorStop(0.25,c+"88");r.addColorStop(1,c+"00");g.fillStyle=r;g.fillRect(0,0,64,64);return sprites[c]=s}
+LC.forEach(spriteFor);
+
+let cw=0,chh=0,DPR=1,K=5,t0=performance.now(),angle=24,tilt=0.1,lastT=performance.now(),hold=false;
+const reduce=matchMedia("(prefers-reduced-motion: reduce)").matches;
+function resize(){const b=cv.getBoundingClientRect();DPR=Math.min(2,devicePixelRatio||1);cw=b.width;chh=b.height;cv.width=Math.round(cw*DPR);cv.height=Math.round(chh*DPR);
+  K=Math.min(chh*0.74/114,cw*0.96/(2*R*1.5));}
+resize();addEventListener("resize",()=>{resize();if(reduce)draw(99)});
+ctx.textAlign="center";ctx.textBaseline="middle";
+const FONT='14px ui-monospace, Menlo, Consolas, monospace';
+const LX=-0.4,LY=0.5,LZ=0.75;
+const order=[],depth=new Float32Array(P.length),SX=new Float32Array(P.length),SY=new Float32Array(P.length),SC=new Float32Array(P.length);
+const fmt=n=>n.toLocaleString("en-US");
+function draw(t){
+  ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,cv.width,cv.height);ctx.font=FONT;
+  const ang=angle*Math.PI/180,c=Math.cos(ang),s=Math.sin(ang),ct=Math.cos(tilt),st=Math.sin(tilt);
+  const cx=cw/2,cy=chh*0.5+4;
+  const gy=0.03+0.97*ease(t/7),prog=ease(t/6.5),gp=clamp((t-8)/3,0,1),starA=clamp((t-10.5)/0.8,0,1);
+  // sky
+  for(const q of stars){const a=0.25+0.6*(0.5+0.5*Math.sin(t*q.sp+q.ph));ctx.globalAlpha=a;ctx.fillStyle="#dfe8ff";
+    ctx.setTransform(DPR*q.s,0,0,DPR*q.s,q.x*cw*DPR,q.y*chh*DPR);ctx.fillText(q.g,0,0);}
+  for(const f of flakes){const y=((f.y+t*f.v)%1),x=f.x+Math.sin(t*0.6+f.ph)*0.012;ctx.globalAlpha=0.55;ctx.fillStyle="#eef3ff";
+    ctx.setTransform(DPR*f.s,0,0,DPR*f.s,x*cw*DPR,y*chh*DPR);ctx.fillText(f.g,0,0);}
+  // soft glow behind the tree
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  {const gx=cx,gyy=cy-(HC-H*0.4*gy)*K*0.0,g=ctx.createRadialGradient(gx,cy,0,gx,cy,K*62);
+    g.addColorStop(0,"rgba(40,140,90,0.22)");g.addColorStop(1,"rgba(40,140,90,0)");ctx.globalAlpha=Math.min(1,prog+0.1);ctx.fillStyle=g;ctx.fillRect(0,0,cw,chh);}
+  // project
+  order.length=0;let letters=0,lit=0;
+  for(let i=0;i<P.length;i++){const p=P[i];let vis=1;
+    if(p.k===0){if(p.rank>prog)continue;letters++;}
+    else if(p.k===2){if(p.gu>gp)continue;}
+    else if(p.k===3||p.k===4){vis=ease((t-p.thr)/0.5);if(vis<=0)continue;}
+    const yy=(p.k===0||p.k===2||p.k===3)?p.y*gy:(p.k===4?p.y*ease((t-p.thr)/0.6):p.y);
+    const x=p.x*c+p.z*s,z=-p.x*s+p.z*c,y1=yy-HC,y2=y1*ct-z*st,z2=y1*st+z*ct,sc=DCAM/(DCAM-z2);
+    SX[i]=cx+x*K*sc;SY[i]=cy-y2*K*sc;SC[i]=sc;depth[i]=z2;order.push(i);}
+  order.sort((a,b)=>depth[a]-depth[b]);
+  const glow=[];
+  for(const i of order){const p=P[i],sc=SC[i];
+    const nx=p.nx*c+p.nz*s,nz=-p.nx*s+p.nz*c,ny=p.ny*ct-nz*st,nz2=p.ny*st+nz*ct;
+    const lt=0.58+0.42*Math.max(0,nx*LX+ny*LY+nz2*LZ),dA=clamp(0.42+0.58*(depth[i]+R)/(2*R),0.25,1);
+    let a=clamp(lt*dA*1.05,0.12,1),col=p.col,m=p.m;
+    if(p.k===0&&p.snow>=0&&p.snow>t/9)col="hsl(210,40%,"+(78+p.snow*14)+"%)";
+    else if(p.k===3){const on=0.5+0.5*Math.sin(t*2.2+p.ph);const v=clamp((on-0.15)/0.6,0,1);a=clamp(dA*(0.35+0.65*v),0,1)*ease((t-p.thr)/0.5);if(on>0.3)lit++;
+      if(depth[i]>-R*0.4&&a>0.5)glow.push(i,v*a);}
+    else if(p.k===2){a*=0.95}
+    else if(p.k===4){a=clamp(lt*1.15*ease((t-p.thr)/0.5),0,1);}
+    const size=K*sc*1.9*m/14,w=Math.sin(t*1.3+p.ph)*0.04;
+    const cr=Math.cos(p.rot+w),sr=Math.sin(p.rot+w);
+    ctx.globalAlpha=a;ctx.fillStyle=col;ctx.setTransform(DPR*size*cr,DPR*size*sr,-DPR*size*sr,DPR*size*cr,SX[i]*DPR,SY[i]*DPR);ctx.fillText(p.g,0,0);}
+  // additive glow around lit bulbs
+  ctx.globalCompositeOperation="lighter";
+  for(let j=0;j<glow.length;j+=2){const i=glow[j],p=P[i],r=K*SC[i]*3.6;ctx.globalAlpha=glow[j+1]*0.55;ctx.setTransform(DPR,0,0,DPR,0,0);
+    ctx.drawImage(spriteFor(p.col),SX[i]-r,SY[i]-r,r*2,r*2);}
+  ctx.globalCompositeOperation="source-over";
+  // star on top (flat, made of letters)
+  if(starA>0){const y1=(H+7)-HC,y2=y1*ct,z2=y1*st,sc=DCAM/(DCAM-z2),sx=cx,sy=cy-y2*K*sc,Ro=K*sc*9.5,pulse=1+0.05*Math.sin(t*3);
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    const g=ctx.createRadialGradient(sx,sy,0,sx,sy,Ro*2.2);g.addColorStop(0,"rgba(255,214,90,0.45)");g.addColorStop(1,"rgba(255,214,90,0)");
+    ctx.globalAlpha=starA;ctx.fillStyle=g;ctx.fillRect(sx-Ro*2.2,sy-Ro*2.2,Ro*4.4,Ro*4.4);
+    const poly=[];for(let j=0;j<10;j++){const a=-Math.PI/2+j*Math.PI/5,r=(j%2?0.42:1)*Ro*pulse;poly.push([r*Math.cos(a),r*Math.sin(a)]);}
+    const inside=(px,py)=>{let o=false;for(let a=0,b=9;a<10;b=a++){const[xa,ya]=poly[a],[xb,yb]=poly[b];if((ya>py)!==(yb>py)&&px<(xb-xa)*(py-ya)/(yb-ya)+xa)o=!o}return o};
+    const dx=K*sc*1.9,dy=K*sc*2.6,sz=K*sc*3.0/14;ctx.fillStyle="hsl(46,96%,64%)";ctx.setTransform(DPR*sz,0,0,DPR*sz,0,0);
+    for(let gy2=-Ro;gy2<=Ro*0.9;gy2+=dy)for(let gx2=-Ro;gx2<=Ro;gx2+=dx){if(inside(gx2,gy2)){
+      ctx.globalAlpha=starA*(0.8+0.2*Math.sin(t*5+gx2));ctx.setTransform(DPR*sz,0,0,DPR*sz,(sx+gx2)*DPR,(sy+gy2)*DPR);ctx.fillText(gy2<-Ro*0.3&&Math.abs(gx2)<Ro*0.25?"@":"*",0,0);}}}
+  ctx.globalAlpha=1;ctx.setTransform(1,0,0,1,0,0);
+  hud.textContent="rotation "+(((angle%360)+360)%360).toFixed(2)+"°\nlights   "+lit+"\nletters  "+fmt(letters);
+}
+// input: drag to rotate/tilt, tap to replay the build-up
+let down=null;
+cv.addEventListener("pointerdown",e=>{down={x:e.clientX,y:e.clientY,t:performance.now(),moved:0};hold=true;cv.setPointerCapture(e.pointerId);cv.style.cursor="grabbing"});
+cv.addEventListener("pointermove",e=>{if(!down)return;const dx=e.clientX-down.x,dy=e.clientY-down.y;down.moved+=Math.abs(dx)+Math.abs(dy);
+  angle-=dx*0.4;tilt=clamp(tilt+dy*0.003,0.0,0.45);down.x=e.clientX;down.y=e.clientY;if(reduce)draw(99)});
+const up=()=>{if(down&&down.moved<8&&performance.now()-down.t<400){t0=performance.now();if(reduce)draw(99)}down=null;hold=false;cv.style.cursor="grab"};
+cv.addEventListener("pointerup",up);cv.addEventListener("pointercancel",()=>{down=null;hold=false});
+function loop(now){const dt=Math.min(0.1,(now-lastT)/1000);lastT=now;if(!hold)angle+=15.5*dt;draw((now-t0)/1000);requestAnimationFrame(loop)}
+if(reduce)draw(99);else requestAnimationFrame(loop);
+</script>
+
+</body>
+</html>

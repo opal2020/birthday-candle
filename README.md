@@ -1,7 +1,7 @@
-# ASCII Christmas Tree
+# Glyph Christmas Tree
 
-Rotating Christmas tree in your terminal.
+A Christmas tree made of 3,000 drifting letters. It grows in, then gets lights, a gold garland, a star and gift boxes.
 
-    python3 tree.py
+Open `index.html` in a browser. Drag to rotate, tap to replay.
 
-Ctrl+C to quit. Needs a terminal at least 60 columns wide.
+`tree.py` is an older terminal version (`python3 tree.py`).
